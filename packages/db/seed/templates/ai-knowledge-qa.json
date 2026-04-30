@@ -1,0 +1,65 @@
+{
+  "id": "tpl-knowledge-qa",
+  "name": "AI 知识库问答助手",
+  "slug": "ai-knowledge-qa",
+  "category": "service",
+  "description": "基于企业知识库的智能问答助手，通过 RAG 检索精准回答员工或客户提问。支持多知识库混合检索、引用溯源、不确定时主动提示。适合内部 FAQ、产品手册、政策法规等场景。",
+  "icon": "book-open",
+  "version": 1,
+  "isBuiltin": true,
+  "requiredTools": ["knowledge_base"],
+  "defaultConfig": {
+    "language": "zh-CN",
+    "maxTurns": 20,
+    "topK": 5,
+    "similarityThreshold": 0.65,
+    "showSources": true,
+    "greetingMessage": "您好！我是知识库问答助手，请输入您的问题，我会从企业知识库中为您查找答案。",
+    "unknownAnswerMessage": "抱歉，我暂时找不到与您问题相关的内容。建议您联系相关负责人获取更多信息。",
+    "knowledgeBaseIds": [],
+    "timezone": "Asia/Shanghai"
+  },
+  "workflowDefinition": {
+    "roles": [
+      {
+        "name": "问答助手",
+        "description": "接收用户问题，在绑定的知识库中进行 RAG 检索，基于检索结果生成准确、有引用来源的回答。不确定时诚实告知。",
+        "operatorType": "agent",
+        "workflowJson": {
+          "trigger": { "type": "webhook", "event": "user_message" },
+          "steps": [
+            {
+              "id": "search_knowledge",
+              "type": "knowledge_search",
+              "config": {
+                "collection": "{{knowledgeBaseIds}}",
+                "topK": 5,
+                "similarityThreshold": 0.65,
+                "description": "在绑定的知识库中检索与用户问题最相关的文档片段"
+              }
+            },
+            {
+              "id": "generate_answer",
+              "type": "llm_call",
+              "config": {
+                "model": "qwen-max",
+                "systemPrompt": "你是一个企业知识库问答助手。基于提供的知识库检索结果，准确回答用户问题。\n\n## 回答规则\n1. 严格基于知识库内容回答，不编造信息\n2. 回答后附上引用来源（文档名称）\n3. 如果知识库中没有相关内容，诚实说明\n4. 回答简洁清晰，使用中文\n5. 如有多个相关文档，综合多个来源给出完整回答\n\n## 知识库检索结果\n{{knowledge_results}}\n\n## 对话历史\n{{message_history}}",
+                "userPrompt": "用户问题：{{user_message}}"
+              }
+            }
+          ]
+        },
+        "defaultConfig": {
+          "topK": 5,
+          "similarityThreshold": 0.65,
+          "showSources": true
+        }
+      }
+    ],
+    "globalConfig": {
+      "timezone": "Asia/Shanghai",
+      "language": "zh-CN",
+      "defaultModel": "qwen-max"
+    }
+  }
+}

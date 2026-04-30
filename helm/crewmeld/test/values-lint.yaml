@@ -1,0 +1,11 @@
+# Minimal values override for helm lint --strict
+# Provides required secrets so lint passes without warnings
+app:
+  env:
+    BETTER_AUTH_SECRET: "test-secret-for-lint-only-32chars00"
+    ENCRYPTION_KEY: "test-encryption-key-for-lint-00"
+    INTERNAL_API_SECRET: "test-internal-api-secret-lint-00"
+
+postgresql:
+  auth:
+    password: "test-pg-password-lint"

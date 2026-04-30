@@ -1,0 +1,113 @@
+{{- if .Values.redis.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "crewmeld.fullname" . }}-redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crewmeld.redis.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "crewmeld.fullname" . }}-redis-headless
+  replicas: {{ if .Values.redis.sentinel.enabled }}{{ add .Values.redis.sentinel.replicas 1 }}{{ else }}1{{ end }}
+  selector:
+    matchLabels:
+      {{- include "crewmeld.redis.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "crewmeld.redis.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.redis.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: redis
+          image: {{ include "crewmeld.image" (dict "context" . "image" .Values.redis.image) }}
+          imagePullPolicy: {{ .Values.redis.image.pullPolicy }}
+          {{- with .Values.redis.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - redis-server
+            - "--requirepass"
+            - "$(REDIS_PASSWORD)"
+            - "--maxmemory"
+            - {{ .Values.redis.config.maxmemory | quote }}
+            - "--maxmemory-policy"
+            - {{ .Values.redis.config.maxmemoryPolicy | quote }}
+            {{- if .Values.redis.config.save }}
+            - "--save"
+            - {{ .Values.redis.config.save | quote }}
+            {{- end }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.redis.auth.existingSecret.enabled }}
+                  name: {{ .Values.redis.auth.existingSecret.name }}
+                  key: {{ .Values.redis.auth.existingSecret.passwordKey }}
+                  {{- else }}
+                  name: {{ include "crewmeld.fullname" . }}-redis
+                  key: redis-password
+                  {{- end }}
+          ports:
+            - containerPort: {{ .Values.redis.service.targetPort }}
+              name: redis
+          {{- with .Values.redis.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.redis.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+        {{- if .Values.redis.sentinel.enabled }}
+        - name: sentinel
+          image: {{ include "crewmeld.image" (dict "context" . "image" .Values.redis.image) }}
+          imagePullPolicy: {{ .Values.redis.image.pullPolicy }}
+          command:
+            - redis-sentinel
+            - /etc/redis/sentinel.conf
+          ports:
+            - containerPort: {{ .Values.redis.sentinel.port }}
+              name: sentinel
+          resources:
+            {{- toYaml .Values.redis.sentinel.resources | nindent 12 }}
+          volumeMounts:
+            - name: sentinel-config
+              mountPath: /etc/redis
+      volumes:
+        - name: sentinel-config
+          configMap:
+            name: {{ include "crewmeld.fullname" . }}-redis-sentinel
+        {{- end }}
+  {{- if .Values.redis.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes:
+          {{- toYaml .Values.redis.persistence.accessModes | nindent 10 }}
+        {{- if .Values.redis.persistence.storageClass }}
+        storageClassName: {{ .Values.redis.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.redis.persistence.size | quote }}
+  {{- end }}
+{{- end }}

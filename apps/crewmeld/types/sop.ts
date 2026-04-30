@@ -1,0 +1,220 @@
+/** SOP node type */
+export type SopNodeType = 'digital_employee' | 'human_employee' | 'human_confirm' | 'switch' // Multi-branch (Switch)
+
+/** Condition branch config (for condition / switch nodes) */
+export interface ConditionConfig {
+  /** Evaluation field (optional; when empty, LLM evaluates full output) */
+  field?: string
+  /** Operator (used by condition nodes) */
+  operator?: 'eq' | 'neq' | 'gt' | 'lt' | 'contains'
+  /** Comparison value (used by condition nodes) */
+  value?: string | number | boolean
+  /** Switch branch mapping: value -> exit ID (used by switch nodes) */
+  cases?: Array<{ value: string | number | boolean; exitId: string }>
+}
+
+/** SOP node definition (whitepaper section 8.4.1) */
+export interface SopNode {
+  id: string
+  name: string
+  type: SopNodeType
+  executorId?: string
+  workflowId?: string
+  toolIds?: string[]
+  useKnowledgeBase?: boolean
+  description?: string
+  timeoutMinutes?: number
+  /** Approval notification method (multi-platform, from collaborator contact method types, default ['email']) */
+  notifyMethod?: string | string[]
+  /** Approver list (human_confirm nodes support multiple approvers, First-Wins) */
+  approvers?: string[]
+  /** Condition/branch config (for condition / switch nodes) */
+  conditionConfig?: ConditionConfig
+  exits: SopExit[]
+  position: { x: number; y: number }
+}
+
+/** Exit type */
+export type SopExitType = 'normal' | 'error'
+
+/** Exit definition */
+export interface SopExit {
+  id: string
+  label: string
+  targetNodeId: string | null
+  condition?: SopCondition
+  /** Exit type: normal=standard exit, error=error exit (followed after retries exhausted) */
+  type?: SopExitType
+}
+
+/** Exit condition */
+export interface SopCondition {
+  type: 'approval_result' | 'workflow_output' | 'variable' | 'always'
+  operator?: 'eq' | 'neq' | 'gt' | 'lt' | 'contains'
+  field?: string
+  value?: string | number | boolean
+}
+
+/** Scheduled trigger config */
+export interface ScheduledTrigger {
+  cron: string
+  timezone?: string
+}
+
+/** Event trigger config */
+export interface EventTrigger {
+  eventType: string
+  sourceChannel?: string
+  filterRules?: Array<{
+    field: string
+    operator: 'eq' | 'neq' | 'contains' | 'gt' | 'lt'
+    value: string | number | boolean
+  }>
+}
+
+/** Manual trigger config (no configuration needed) */
+export type ManualTrigger = {}
+
+export type SopTriggerConfig = ScheduledTrigger | EventTrigger | ManualTrigger
+
+/** State snapshot (whitepaper section 8.9.3) */
+export interface SopStateSnapshot {
+  currentNodeId: string
+  nodeStates: Record<string, SopNodeState>
+  executionPath: string[]
+  exitDecisions: Record<string, SopExitDecision>
+  variables: Record<string, unknown>
+  workflowResults: Record<string, SopWorkflowResult>
+  triggerData?: Record<string, unknown>
+}
+
+/** Single node state */
+export interface SopNodeState {
+  status: 'pending' | 'running' | 'completed' | 'skipped' | 'error'
+  startedAt?: string
+  completedAt?: string
+  retryCount: number
+  output?: Record<string, unknown>
+  exitId?: string
+}
+
+/** Human confirmation decision record */
+export interface SopExitDecision {
+  decision: 'approved' | 'rejected'
+  decidedBy: string
+  decidedAt: string
+  comment?: string
+}
+
+/** Workflow execution result */
+export interface SopWorkflowResult {
+  workflowId: string
+  runId: string
+  status: string
+  output?: Record<string, unknown>
+}
+
+/**
+ * SSE event types — use 'sop:' prefix, non-conflicting with sandbox module's 'sandbox:' prefix.
+ */
+export type SopEventType =
+  | 'sop:started'
+  | 'sop:node:started'
+  | 'sop:node:completed'
+  | 'sop:node:error'
+  | 'sop:paused'
+  | 'sop:resumed'
+  | 'sop:completed'
+  | 'sop:error'
+  | 'sop:timed_out'
+  | 'sop:cancelled'
+  | 'sop:workflow:started'
+  | 'sop:workflow:completed'
+
+/** SSE event */
+export interface SopExecutionEvent {
+  type: SopEventType
+  executionId: string
+  nodeId?: string
+  timestamp: string
+  data?: Record<string, unknown>
+}
+
+/** API payload — submitted when saving from editor */
+export interface SopDefinitionPayload {
+  name: string
+  description?: string
+  triggerType: string
+  triggerConfig: Record<string, unknown>
+  sopTimeoutMinutes: number
+  maxRejectionCycles: number
+  maxRetries?: number
+  isActive?: boolean
+  nodes: SopNode[]
+  edges: SopSerializedEdge[]
+}
+
+/** Serialized edge */
+export interface SopSerializedEdge {
+  id: string
+  source: string
+  sourceHandle?: string | null
+  target: string
+  targetHandle?: string | null
+}
+
+/** Node execution result */
+export interface NodeExecutionResult {
+  output?: Record<string, unknown>
+  exitId?: string
+  paused?: boolean
+  error?: string
+  /** Flag for error exit path (set by engine after retries exhausted) */
+  errorExit?: boolean
+}
+
+/** BullMQ timeout job payload */
+export interface TimeoutJobPayload {
+  executionId: string
+  nodeId?: string
+  pauseId?: string
+  type: 'node' | 'sop'
+}
+
+/**
+ * Notification job payload — enqueued per recipient, one job per recipient
+ *
+ * The SOP module only determines "who to notify", not the delivery channel.
+ * The NotificationDispatcher Worker (Doc 06 - Collaborator Management Module) receives the job,
+ * looks up the recipient's contact_methods, and fans out delivery to all configured channels in parallel.
+ */
+export interface NotificationJobPayload {
+  executionId: string
+  nodeId: string
+  recipientId: string
+  recipientName: string
+  approvalToken: string
+  messageTemplate: string
+  /** Notification method selected in SOP editor (multi-platform, e.g. ['email', 'feishu']) */
+  notifyMethod?: string | string[]
+  /** Digital employee ID that triggered the conversation (for looking up bound channel connections, avoiding cross-app) */
+  sourceEmployeeId?: string
+  contextData: {
+    sopName: string
+    nodeName: string
+    aiSummary?: string
+    deadline?: string
+    pauseId: string
+    /** Execution result of the previous digital employee node (JSON string) */
+    previousNodeResult?: string
+    previousNodeName?: string
+    /** Name of the user who triggered the conversation (shown as initiator on approval cards) */
+    senderName?: string
+    /** Email of the user who triggered the conversation (sender address for email channel, used as Reply-To in approval emails) */
+    senderEmail?: string
+    /** Externally accessible baseUrl (injected from request headers when API-triggered, used for building approval links) */
+    baseUrl?: string
+    /** User language code ('zh' | 'en' etc., detected by conversation engine and passed via triggerData._meta) */
+    userLanguage?: string
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "extends": "@crewmeld/tsconfig/nextjs.json",
+  "compilerOptions": {
+    "ignoreDeprecations": "5.0",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"],
+      "@/components/*": ["components/*"],
+      "@/lib/*": ["./lib/*"],
+      "@/stores": ["./stores"],
+      "@/stores/*": ["./stores/*"],
+      "@/hooks/*": ["./hooks/*"],
+      "@/blocks": ["./blocks"],
+      "@/blocks/*": ["./blocks/*"],
+      "@/providers/*": ["./providers/*"],
+      "@/providers": ["./providers"],
+      "@/tools": ["./tools"],
+      "@/tools/*": ["./tools/*"],
+      "@/serializer": ["./serializer"],
+      "@/serializer/*": ["./serializer/*"],
+      "@crewmeld/db": ["../../packages/db"],
+      "@crewmeld/db/*": ["../../packages/db/*"],
+      "@/executor": ["./executor"],
+      "@/executor/*": ["./executor/*"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx", "../next-env.d.ts"],
+  "exclude": [
+    "node_modules",
+    ".next",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "vitest.config.ts",
+    "vitest.setup.ts",
+    "scripts/**"
+  ]
+}

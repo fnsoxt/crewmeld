@@ -1,0 +1,1 @@
+ALTER TABLE "sop_executions" ADD COLUMN "metadata" jsonb DEFAULT '{}';

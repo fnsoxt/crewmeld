@@ -1,0 +1,14 @@
+node_modules
+.next
+.turbo
+.git
+tests
+temp
+uploads
+data
+*.log
+.env*
+docs
+# E2E MSW mock layer entry — loads tests/e2e/fixtures/server-mocks/.
+# Excluded from production images; Next.js treats instrumentation.ts as optional.
+apps/crewmeld/instrumentation.ts

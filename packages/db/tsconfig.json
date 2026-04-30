@@ -1,0 +1,12 @@
+{
+  "extends": "@crewmeld/tsconfig/library.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@crewmeld/db": ["./index.ts"],
+      "@crewmeld/db/*": ["./*"]
+    }
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules", "scripts"]
+}

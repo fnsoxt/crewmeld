@@ -1,0 +1,40 @@
+{{- if .Values.redis.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crewmeld.fullname" . }}-redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crewmeld.redis.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.redis.service.type }}
+  ports:
+    - port: {{ .Values.redis.service.port }}
+      targetPort: redis
+      name: redis
+    {{- if .Values.redis.sentinel.enabled }}
+    - port: {{ .Values.redis.sentinel.port }}
+      targetPort: sentinel
+      name: sentinel
+    {{- end }}
+  selector:
+    {{- include "crewmeld.redis.selectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crewmeld.fullname" . }}-redis-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crewmeld.redis.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: {{ .Values.redis.service.port }}
+      targetPort: redis
+      name: redis
+  selector:
+    {{- include "crewmeld.redis.selectorLabels" . | nindent 4 }}
+{{- end }}

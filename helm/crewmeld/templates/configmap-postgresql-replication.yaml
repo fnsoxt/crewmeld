@@ -1,0 +1,53 @@
+{{- if and .Values.postgresql.enabled .Values.postgresql.replication.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "crewmeld.fullname" . }}-postgresql-replication
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crewmeld.postgresql.labels" . | nindent 4 }}
+data:
+  primary-override.conf: |
+    wal_level = replica
+    max_wal_senders = {{ .Values.postgresql.replication.maxWalSenders }}
+    max_replication_slots = {{ .Values.postgresql.replication.maxReplicationSlots }}
+    hot_standby = on
+    {{- if .Values.postgresql.replication.synchronous }}
+    synchronous_commit = on
+    synchronous_standby_names = '*'
+    {{- end }}
+
+  pg_hba_replication.conf: |
+    # Replication connections
+    host replication {{ .Values.postgresql.replication.user }} 0.0.0.0/0 md5
+
+  setup-replication.sh: |
+    #!/bin/bash
+    set -e
+    ORDINAL=${HOSTNAME##*-}
+    if [ "$ORDINAL" -eq 0 ]; then
+      echo "主节点：创建复制用户和复制槽"
+      psql -U {{ .Values.postgresql.auth.username }} -d {{ .Values.postgresql.auth.database }} -c \
+        "DO \$\$ BEGIN
+          IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ .Values.postgresql.replication.user }}') THEN
+            CREATE ROLE {{ .Values.postgresql.replication.user }} WITH REPLICATION LOGIN PASSWORD '${REPLICATION_PASSWORD}';
+          END IF;
+        END \$\$;"
+    else
+      echo "从节点 $ORDINAL：等待主节点就绪后执行 pg_basebackup"
+      until pg_isready -h {{ include "crewmeld.fullname" . }}-postgresql-0.{{ include "crewmeld.fullname" . }}-postgresql-headless -p 5432 -U {{ .Values.postgresql.auth.username }}; do
+        echo "等待主节点..."
+        sleep 2
+      done
+      if [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then
+        echo "执行 pg_basebackup..."
+        PGPASSWORD=${REPLICATION_PASSWORD} pg_basebackup \
+          -h {{ include "crewmeld.fullname" . }}-postgresql-0.{{ include "crewmeld.fullname" . }}-postgresql-headless \
+          -p 5432 \
+          -U {{ .Values.postgresql.replication.user }} \
+          -D /var/lib/postgresql/data \
+          -Fp -Xs -R
+        echo "pg_basebackup 完成"
+      fi
+    fi
+{{- end }}

@@ -1,0 +1,159 @@
+{
+  "id": "tpl-sales-sdr",
+  "name": "AI 销售 SDR 团队",
+  "slug": "ai-sales-sdr",
+  "category": "sales",
+  "description": "由 5 个 AI 角色组成的销售开发团队，覆盖线索研究、外联触达、评分筛选、CRM 录入和销售复盘全流程。",
+  "icon": "target",
+  "version": 1,
+  "isBuiltin": true,
+  "requiredTools": ["crm", "email", "web_search"],
+  "defaultConfig": {
+    "targetIndustry": "",
+    "dailyLeadQuota": 50,
+    "scoringThreshold": 70,
+    "crmType": "hubspot",
+    "emailProvider": "smtp"
+  },
+  "workflowDefinition": {
+    "roles": [
+      {
+        "name": "线索研究员",
+        "description": "从指定数据源批量搜索潜在客户信息，提取公司名、联系人、行业等结构化数据",
+        "operatorType": "agent",
+        "workflowJson": {
+          "trigger": { "type": "scheduled", "cron": "0 9 * * 1-5" },
+          "steps": [
+            {
+              "id": "search",
+              "type": "web_search",
+              "config": { "query": "{{targetIndustry}} companies" }
+            },
+            {
+              "id": "extract",
+              "type": "llm_call",
+              "config": {
+                "model": "qwen-plus",
+                "prompt": "Extract company info from search results"
+              }
+            },
+            {
+              "id": "deduplicate",
+              "type": "function",
+              "config": { "action": "check_crm_duplicates" }
+            }
+          ]
+        },
+        "defaultConfig": {
+          "searchSources": ["linkedin", "crunchbase"],
+          "maxResults": 100
+        }
+      },
+      {
+        "name": "SDR（销售开发代表）",
+        "description": "根据线索信息生成个性化外联邮件/消息，执行多轮跟进策略",
+        "operatorType": "agent",
+        "workflowJson": {
+          "trigger": { "type": "event", "source": "lead_researcher" },
+          "steps": [
+            {
+              "id": "personalize",
+              "type": "llm_call",
+              "config": { "model": "qwen-max", "prompt": "Generate personalized outreach email" }
+            },
+            { "id": "send", "type": "email_send", "config": { "template": "cold_outreach" } },
+            {
+              "id": "followup",
+              "type": "scheduled_task",
+              "config": { "delay": "3d", "maxAttempts": 3 }
+            }
+          ]
+        },
+        "defaultConfig": {
+          "toneStyle": "professional",
+          "maxFollowups": 3,
+          "followupInterval": "3d"
+        }
+      },
+      {
+        "name": "评分员",
+        "description": "对线索进行多维评分（公司规模/行业匹配/互动信号），标记高优先级线索",
+        "operatorType": "function",
+        "workflowJson": {
+          "trigger": { "type": "event", "source": "sdr_response" },
+          "steps": [
+            {
+              "id": "score",
+              "type": "llm_call",
+              "config": { "model": "qwen-plus", "prompt": "Score this lead based on criteria" }
+            },
+            { "id": "classify", "type": "function", "config": { "action": "classify_priority" } }
+          ]
+        },
+        "defaultConfig": {
+          "scoreDimensions": [
+            "company_size",
+            "industry_fit",
+            "engagement_signal",
+            "budget_indicator"
+          ],
+          "highPriorityThreshold": 80
+        }
+      },
+      {
+        "name": "CRM 录入员",
+        "description": "将合格线索及其互动历史自动同步至 CRM 系统，创建联系人和商机记录",
+        "operatorType": "function",
+        "workflowJson": {
+          "trigger": { "type": "event", "source": "scorer" },
+          "steps": [
+            { "id": "format", "type": "function", "config": { "action": "format_crm_data" } },
+            { "id": "sync", "type": "api_call", "config": { "target": "crm_api" } }
+          ]
+        },
+        "defaultConfig": {
+          "crmFields": ["name", "email", "company", "score", "source"],
+          "createOpportunity": true
+        }
+      },
+      {
+        "name": "销售教练",
+        "description": "分析团队的外联效果和转化数据，生成每周复盘报告和优化建议",
+        "operatorType": "agent",
+        "workflowJson": {
+          "trigger": { "type": "scheduled", "cron": "0 17 * * 5" },
+          "steps": [
+            {
+              "id": "collect",
+              "type": "function",
+              "config": { "action": "collect_weekly_metrics" }
+            },
+            {
+              "id": "analyze",
+              "type": "llm_call",
+              "config": {
+                "model": "qwen-max",
+                "prompt": "Analyze sales team performance and provide coaching"
+              }
+            },
+            { "id": "report", "type": "function", "config": { "action": "generate_report" } }
+          ]
+        },
+        "defaultConfig": {
+          "reportFrequency": "weekly",
+          "metricsToTrack": ["response_rate", "meeting_rate", "conversion_rate"]
+        }
+      }
+    ],
+    "connections": [
+      { "from": "线索研究员", "to": "SDR（销售开发代表）", "condition": "new_leads_found" },
+      { "from": "SDR（销售开发代表）", "to": "评分员", "condition": "response_received" },
+      { "from": "评分员", "to": "CRM 录入员", "condition": "score >= threshold" },
+      { "from": "CRM 录入员", "to": "销售教练", "condition": "weekly_aggregation" }
+    ],
+    "globalConfig": {
+      "timezone": "Asia/Shanghai",
+      "language": "zh-CN"
+    }
+  }
+}

@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: crewmeld-deployer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: crewmeld-deployer-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "services", "configmaps", "secrets", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: crewmeld-deployer-binding
+subjects:
+  - kind: ServiceAccount
+    name: crewmeld-deployer
+roleRef:
+  kind: Role
+  name: crewmeld-deployer-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# ClusterRole: allow get on the crewmeld-skills namespace only.
+# Required by lib/k8s/deploy-skill.ts ensureNamespace() which does
+# GET /api/v1/namespaces/<name> before deploying. Without this,
+# the get returns 403 and deploy is aborted with "namespace does not exist".
+# Scoped via resourceNames to a single namespace for least privilege.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crewmeld-deployer-ns-reader
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["crewmeld-skills"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crewmeld-deployer-ns-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: crewmeld-deployer
+    namespace: crewmeld-skills
+roleRef:
+  kind: ClusterRole
+  name: crewmeld-deployer-ns-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# Dependency cache PVC — mounted at /cache by all skill Pods, shared across bun install / npm install / playwright browsers
+# On single-node k3s the local-path storage class supports multiple Pods mounting the same RWO PVC (since all Pods run on the same node)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: crewmeld-deps-cache
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi

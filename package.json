@@ -1,0 +1,75 @@
+{
+  "name": "crewmeld",
+  "packageManager": "bun@1.3.9",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "dev:sockets": "cd apps/crewmeld && bun run dev:sockets",
+    "dev:full": "cd apps/crewmeld && bun run dev:full",
+    "test": "turbo run test",
+    "test:e2e": "bunx playwright test",
+    "test:e2e:sop": "bunx playwright test tests/e2e/sop/",
+    "test:e2e:credentials": "bunx playwright test tests/e2e/credentials/",
+    "format": "bunx biome format --write .",
+    "format:check": "bunx biome format .",
+    "lint": "bunx biome check --write --unsafe .",
+    "lint:check": "bunx biome check --unsafe .",
+    "lint:helm": "helm lint ./helm/crewmeld --strict --values ./helm/crewmeld/test/values-lint.yaml",
+    "lint:all": "bun run lint && bun run lint:helm",
+    "check": "bunx biome check --files-ignore-unknown=true",
+    "prepare": "bun husky",
+    "type-check": "turbo run type-check",
+    "release": "bun run scripts/create-single-release.ts",
+    "license:generate": "bun run scripts/license-generate.ts",
+    "check:schema-drift": "bun run scripts/check-schema-drift.ts",
+    "oss:sync": "bun run scripts/oss-sync/sync.ts"
+  },
+  "overrides": {
+    "react": "19.2.1",
+    "react-dom": "19.2.1",
+    "next": "16.1.6",
+    "@next/env": "16.1.6",
+    "drizzle-orm": "^0.44.5",
+    "postgres": "^3.4.5"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "3.1016.0",
+    "@aws-sdk/s3-request-presigner": "3.1016.0",
+    "@biomejs/biome": "2.0.0-beta.5",
+    "@next/env": "16.1.6",
+    "@playwright/test": "1.58.2",
+    "@tailwindcss/typography": "0.5.19",
+    "drizzle-kit": "^0.31.4",
+    "husky": "9.1.7",
+    "jszip": "3.10.1",
+    "msw": "2.13.5",
+    "sharp": "0.34.5",
+    "turbo": "2.8.10"
+  },
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx,json,css,scss}": [
+      "biome check --write --no-errors-on-unmatched --files-ignore-unknown=true"
+    ],
+    "apps/crewmeld/app/api/**/*.{ts,tsx}": [
+      "node apps/crewmeld/scripts/check-no-cn-in-api.js"
+    ]
+  },
+  "trustedDependencies": [
+    "sharp"
+  ],
+  "dependencies": {
+    "better-auth": "1.4.9",
+    "cron-parser": "5.5.0",
+    "iconv-lite": "0.7.2",
+    "tiktoken": "1.0.17",
+    "tinyld": "1.3.4",
+    "undici": "7.24.6"
+  }
+}

@@ -1,0 +1,127 @@
+{
+  "templateId": "tpl-customer-service",
+  "testScenarios": [
+    {
+      "name": "售前产品咨询",
+      "input": {
+        "customer_message": "你们的企业版支持多少人同时在线？",
+        "message_history": []
+      },
+      "expectedBehavior": {
+        "intentClassification": "presale",
+        "shouldRouteToPresale": true,
+        "shouldSearchKnowledgeBase": true,
+        "shouldGenerateAnswer": true,
+        "shouldTransferHuman": false
+      }
+    },
+    {
+      "name": "售后退货请求",
+      "input": {
+        "customer_message": "我买的产品有质量问题，要退货",
+        "message_history": []
+      },
+      "expectedBehavior": {
+        "intentClassification": "aftersale",
+        "shouldRouteToAftersale": true,
+        "shouldSearchKnowledgeBase": true,
+        "shouldCreateTicket": true,
+        "ticketNeedsApproval": true
+      }
+    },
+    {
+      "name": "明确要求转人工",
+      "input": {
+        "customer_message": "转人工",
+        "message_history": []
+      },
+      "expectedBehavior": {
+        "intentClassification": "transfer_human",
+        "shouldRouteToTransferHuman": true,
+        "shouldSummarizeConversation": true,
+        "shouldSendNotification": true
+      }
+    },
+    {
+      "name": "负面情绪投诉",
+      "input": {
+        "customer_message": "你们这是什么破产品！太差了！我要投诉！",
+        "message_history": []
+      },
+      "expectedBehavior": {
+        "sentimentDetected": "negative",
+        "shouldRouteToTransferHuman": true,
+        "priority": "high"
+      }
+    },
+    {
+      "name": "多轮对话后转人工",
+      "input": {
+        "customer_message": "还是不行，你再说一遍",
+        "message_history": [
+          { "role": "user", "content": "怎么重置密码？" },
+          { "role": "assistant", "content": "您可以在登录页面点击忘记密码..." },
+          { "role": "user", "content": "我试了不行" },
+          { "role": "assistant", "content": "请确认您输入的邮箱是注册时使用的..." },
+          { "role": "user", "content": "邮箱是对的" },
+          { "role": "assistant", "content": "请检查垃圾邮件文件夹..." },
+          { "role": "user", "content": "没有收到" },
+          { "role": "assistant", "content": "建议您尝试使用手机号验证..." },
+          { "role": "user", "content": "手机号也不行" },
+          { "role": "assistant", "content": "请您提供注册时的手机号，我帮您核实..." },
+          { "role": "user", "content": "手机号是 138xxxx" },
+          { "role": "assistant", "content": "正在为您核实，请稍候..." }
+        ]
+      },
+      "expectedBehavior": {
+        "exceedsMaxTurns": true,
+        "shouldRouteToTransferHuman": true,
+        "transferReason": "max_turns_reached"
+      }
+    },
+    {
+      "name": "简单闲聊",
+      "input": {
+        "customer_message": "你好",
+        "message_history": []
+      },
+      "expectedBehavior": {
+        "intentClassification": "general",
+        "shouldReplyDirectly": true,
+        "shouldSendGreeting": true
+      }
+    },
+    {
+      "name": "知识库无答案时转人工",
+      "input": {
+        "customer_message": "你们支持对接自建的ERP系统吗？",
+        "message_history": [],
+        "knowledge_results": []
+      },
+      "expectedBehavior": {
+        "intentClassification": "presale",
+        "shouldRouteToPresale": true,
+        "knowledgeBaseEmpty": true,
+        "shouldTransferHuman": true,
+        "transferReason": "知识库无相关内容"
+      }
+    },
+    {
+      "name": "质检低分触发告警",
+      "input": {
+        "conversation": [
+          { "role": "user", "content": "怎么退款？" },
+          { "role": "assistant", "content": "不知道" },
+          { "role": "user", "content": "你是客服吗？" },
+          { "role": "assistant", "content": "是的" }
+        ]
+      },
+      "expectedBehavior": {
+        "qualityCheckTriggered": true,
+        "overallScoreBelow": 60,
+        "needsReview": true,
+        "shouldAlert": true
+      }
+    }
+  ]
+}

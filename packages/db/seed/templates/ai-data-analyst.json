@@ -1,0 +1,268 @@
+{
+  "id": "tpl-data-analyst",
+  "name": "AI 数据分析师",
+  "slug": "ai-data-analyst",
+  "category": "data",
+  "description": "自然语言转 SQL 查询，自动生成数据图表和分析报表。支持 PostgreSQL / MySQL 数据源直连，定时报表推送，异常数据自动检测。私有化部署确保企业数据零出域。",
+  "icon": "bar-chart",
+  "version": 1,
+  "isBuiltin": true,
+  "requiredTools": ["database"],
+  "defaultConfig": {
+    "databaseType": "postgresql",
+    "connectionString": "",
+    "schemaFilter": "public",
+    "maxQueryRows": 10000,
+    "queryTimeout": 30000,
+    "allowedOperations": ["SELECT"],
+    "reportSchedule": "",
+    "reportQueries": [],
+    "anomalyDetection": false,
+    "anomalyRules": [],
+    "outputFormat": "markdown",
+    "chartLibrary": "echarts",
+    "notificationChannel": "",
+    "language": "zh-CN",
+    "timezone": "Asia/Shanghai"
+  },
+  "workflowDefinition": {
+    "roles": [
+      {
+        "name": "查询分析师",
+        "description": "接收自然语言查询请求，加载数据库 Schema 元数据，将自然语言转换为安全的 SELECT SQL，执行查询并返回结构化结果",
+        "operatorType": "agent",
+        "workflowJson": {
+          "trigger": { "type": "manual" },
+          "steps": [
+            {
+              "id": "load_schema",
+              "type": "function",
+              "config": {
+                "language": "javascript",
+                "description": "加载目标数据库的表结构元数据（表名、字段名、字段类型、注释），生成 Schema 上下文供 LLM 参考",
+                "code": "async function loadSchema(params) {\n  const { connectionString, schemaFilter } = params;\n  const schemaQuery = `SELECT table_name, column_name, data_type, column_default, is_nullable, col_description((table_schema || '.' || table_name)::regclass, ordinal_position) as comment FROM information_schema.columns WHERE table_schema = '${schemaFilter}' ORDER BY table_name, ordinal_position`;\n  return { schema_context: result };\n}"
+              }
+            },
+            {
+              "id": "nl2sql",
+              "type": "llm_call",
+              "config": {
+                "model": "qwen-max",
+                "systemPrompt": "你是一个专业的 SQL 查询专家。你的任务是将用户的自然语言查询转换为安全、高效的 SQL 语句。\n\n## 规则\n1. 只生成 SELECT 语句，绝不生成 INSERT/UPDATE/DELETE/DROP/ALTER 等修改数据的语句\n2. 所有查询必须包含 LIMIT 子句（默认 LIMIT 10000），防止返回过大结果集\n3. 如果涉及时间范围，默认使用最近 30 天\n4. 对金额类字段使用 ROUND() 保留 2 位小数\n5. 使用中文别名让结果更易读（AS \"渠道名称\"）\n6. 优先使用聚合函数（COUNT/SUM/AVG）而非返回明细数据\n7. 如果用户的查询不明确，返回你的理解和 2-3 个可能的 SQL 供选择\n\n## 输出格式\n```json\n{\n  \"understanding\": \"对用户查询意图的理解\",\n  \"sql\": \"生成的 SQL 语句\",\n  \"explanation\": \"SQL 逻辑说明\",\n  \"confidence\": 0.95\n}\n```\n\n## 数据库 Schema\n{{schema_context}}",
+                "userPrompt": "{{user_query}}",
+                "responseFormat": {
+                  "name": "sql_result",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "understanding": { "type": "string" },
+                      "sql": { "type": "string" },
+                      "explanation": { "type": "string" },
+                      "confidence": { "type": "number" }
+                    },
+                    "required": ["understanding", "sql", "explanation", "confidence"]
+                  }
+                }
+              }
+            },
+            {
+              "id": "validate_sql",
+              "type": "function",
+              "config": {
+                "language": "javascript",
+                "description": "校验生成的 SQL 安全性：禁止写操作、禁止系统表访问、强制 LIMIT、检测 SQL 注入风险",
+                "code": "function validateSql(params) {\n  const { sql, allowedOperations } = params;\n  const upperSql = sql.toUpperCase().trim();\n  const forbidden = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'TRUNCATE', 'CREATE', 'GRANT', 'REVOKE'];\n  for (const keyword of forbidden) {\n    if (upperSql.startsWith(keyword)) {\n      return { valid: false, error: `禁止执行 ${keyword} 操作` };\n    }\n  }\n  if (!upperSql.includes('LIMIT')) {\n    return { valid: true, sql: sql + ' LIMIT 10000', warning: '已自动添加 LIMIT 10000' };\n  }\n  return { valid: true, sql: sql };\n}"
+              }
+            },
+            {
+              "id": "execute_query",
+              "type": "database_query",
+              "config": {
+                "timeout": 30000,
+                "readOnly": true
+              }
+            }
+          ]
+        },
+        "defaultConfig": {
+          "maxQueryRows": 10000,
+          "queryTimeout": 30000,
+          "allowedOperations": ["SELECT"],
+          "schemaFilter": "public"
+        }
+      },
+      {
+        "name": "图表生成师",
+        "description": "根据查询结果数据自动判断最佳可视化类型（折线图/柱状图/饼图/表格），生成 ECharts JSON 配置",
+        "operatorType": "agent",
+        "workflowJson": {
+          "trigger": { "type": "event", "source": "query_analyst" },
+          "steps": [
+            {
+              "id": "analyze_data",
+              "type": "function",
+              "config": {
+                "language": "javascript",
+                "description": "分析查询结果的数据特征（行数、列数、数据类型、时间序列特征），为图表类型选择提供建议",
+                "code": "function analyzeData(params) {\n  const { queryResult } = params;\n  const rows = queryResult.rows || [];\n  const columns = queryResult.columns || [];\n  const rowCount = rows.length;\n  const colCount = columns.length;\n  const hasTimeColumn = columns.some(c => ['date', 'time', 'month', 'year', 'day', 'week', 'created_at', 'updated_at'].some(t => c.name.toLowerCase().includes(t)));\n  const hasNumericColumn = columns.some(c => ['int', 'float', 'decimal', 'numeric', 'bigint', 'double'].some(t => c.type.toLowerCase().includes(t)));\n  const hasCategoryColumn = columns.some(c => ['varchar', 'text', 'char'].some(t => c.type.toLowerCase().includes(t)));\n  let suggestedChartType = 'table';\n  if (rowCount <= 1) suggestedChartType = 'metric';\n  else if (hasTimeColumn && hasNumericColumn) suggestedChartType = 'line';\n  else if (hasCategoryColumn && hasNumericColumn && rowCount <= 10) suggestedChartType = 'pie';\n  else if (hasCategoryColumn && hasNumericColumn) suggestedChartType = 'bar';\n  return { rowCount, colCount, hasTimeColumn, hasNumericColumn, hasCategoryColumn, suggestedChartType };\n}"
+              }
+            },
+            {
+              "id": "generate_chart",
+              "type": "llm_call",
+              "config": {
+                "model": "qwen-plus",
+                "systemPrompt": "你是一个数据可视化专家。根据提供的查询结果数据和数据特征分析，生成 ECharts 配置 JSON。\n\n## 规则\n1. 必须输出合法的 ECharts option JSON\n2. 所有文本使用中文\n3. 配色方案使用企业级蓝色系：['#3B82F6', '#60A5FA', '#93C5FD', '#2563EB', '#1D4ED8']\n4. 必须包含 title（标题）、tooltip、legend（图例）\n5. 数值类数据自动添加千分位分隔符\n6. 时间轴按时间顺序排列\n7. 饼图不超过 8 个扇区，超出部分合并为「其他」\n8. 图表尺寸自适应容器\n\n## 图表类型选择\n- 时间序列数据 → 折线图（line）\n- 分类对比（≤10 类）→ 饼图（pie）\n- 分类对比（>10 类）→ 水平柱状图（bar）\n- 单一指标 → 仪表盘（gauge）或数字卡片\n- 多维对比 → 分组柱状图\n\n## 输出格式\n```json\n{\n  \"chartType\": \"line|bar|pie|table|metric\",\n  \"echartsOption\": { ... },\n  \"description\": \"图表内容的一句话描述\"\n}\n```",
+                "userPrompt": "数据特征：{{data_analysis}}\n\n查询结果：{{query_result}}",
+                "responseFormat": {
+                  "name": "chart_config",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "chartType": {
+                        "type": "string",
+                        "enum": ["line", "bar", "pie", "table", "metric", "gauge"]
+                      },
+                      "echartsOption": { "type": "object" },
+                      "description": { "type": "string" }
+                    },
+                    "required": ["chartType", "echartsOption", "description"]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "defaultConfig": {
+          "chartTypes": ["line", "bar", "pie", "table", "metric"],
+          "colorScheme": "blue",
+          "autoDetectType": true
+        }
+      },
+      {
+        "name": "报表撰写师",
+        "description": "根据查询结果和图表数据，生成自然语言分析报告（Markdown 格式），包含数据概要、趋势分析、关键发现和建议",
+        "operatorType": "agent",
+        "workflowJson": {
+          "trigger": { "type": "event", "source": "chart_generator" },
+          "steps": [
+            {
+              "id": "generate_report",
+              "type": "llm_call",
+              "config": {
+                "model": "qwen-max",
+                "systemPrompt": "你是一位资深数据分析师，擅长将数据查询结果转化为清晰、有洞察力的商业分析报告。\n\n## 报告结构\n1. **数据概要**：用 1-2 句话概括核心发现\n2. **关键指标**：列出 3-5 个关键数字（用表格呈现）\n3. **趋势分析**：描述数据变化趋势，与历史对比（如有）\n4. **异常标记**：标出异常值或需要关注的数据点（用 ⚠️ 标记）\n5. **建议**：基于数据给出 1-3 条可执行的建议\n\n## 写作规范\n- 使用简体中文，专业但易读\n- 数字使用千分位分隔符（如 12,847）\n- 百分比保留 1 位小数（如 43.2%）\n- 金额使用 ¥ 符号（如 ¥128,400）\n- 同比/环比变化使用 ↑ 或 ↓ 箭头（如 ↑18.3%）\n- 避免使用「ROI」「节省费用」「等量人力」等禁用术语\n- 输出为 Markdown 格式\n\n## 输出格式\n直接输出 Markdown 文本，不要包裹在代码块中。",
+                "userPrompt": "用户查询：{{user_query}}\n\nSQL 语句：{{sql}}\n\n查询结果：{{query_result}}\n\n图表描述：{{chart_description}}"
+              }
+            }
+          ]
+        },
+        "defaultConfig": {
+          "outputFormat": "markdown",
+          "includeSQL": true,
+          "includeChart": true,
+          "language": "zh-CN"
+        }
+      },
+      {
+        "name": "异常检测师",
+        "description": "按配置周期自动执行预定义的异常检测 SQL，对结果进行统计分析和 LLM 解读，发现异常时触发告警通知",
+        "operatorType": "function",
+        "workflowJson": {
+          "trigger": { "type": "scheduled", "cron": "0 * * * *" },
+          "steps": [
+            {
+              "id": "run_anomaly_checks",
+              "type": "function",
+              "config": {
+                "language": "javascript",
+                "description": "依次执行配置的异常检测规则（SQL + 阈值），收集异常结果",
+                "code": "async function runAnomalyChecks(params) {\n  const { anomalyRules, db } = params;\n  const results = [];\n  for (const rule of anomalyRules) {\n    const queryResult = await db.query(rule.sql);\n    const value = queryResult.rows[0]?.[rule.valueColumn];\n    const isAnomaly = rule.operator === 'gt' ? value > rule.threshold : rule.operator === 'lt' ? value < rule.threshold : value !== rule.threshold;\n    if (isAnomaly) {\n      results.push({ ruleName: rule.name, severity: rule.severity, currentValue: value, threshold: rule.threshold, description: rule.description });\n    }\n  }\n  return { anomalies: results, checkTime: new Date().toISOString(), totalRules: anomalyRules.length };\n}"
+              }
+            },
+            {
+              "id": "analyze_anomalies",
+              "type": "llm_call",
+              "config": {
+                "model": "qwen-plus",
+                "systemPrompt": "你是一位数据监控专家。分析以下异常检测结果，评估严重程度，并给出可能的原因和建议的行动方案。\n\n## 输出格式\n```json\n{\n  \"summary\": \"一句话概述异常情况\",\n  \"details\": [\n    {\n      \"ruleName\": \"规则名称\",\n      \"severity\": \"critical|warning|info\",\n      \"analysis\": \"原因分析\",\n      \"suggestion\": \"建议行动\"\n    }\n  ],\n  \"shouldAlert\": true\n}\n```",
+                "userPrompt": "异常检测结果：{{anomaly_results}}",
+                "responseFormat": {
+                  "name": "anomaly_analysis",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "summary": { "type": "string" },
+                      "details": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "ruleName": { "type": "string" },
+                            "severity": {
+                              "type": "string",
+                              "enum": ["critical", "warning", "info"]
+                            },
+                            "analysis": { "type": "string" },
+                            "suggestion": { "type": "string" }
+                          },
+                          "required": ["ruleName", "severity", "analysis", "suggestion"]
+                        }
+                      },
+                      "shouldAlert": { "type": "boolean" }
+                    },
+                    "required": ["summary", "details", "shouldAlert"]
+                  }
+                }
+              }
+            },
+            {
+              "id": "send_alert",
+              "type": "notification",
+              "config": {
+                "condition": "shouldAlert === true",
+                "channel": "{{notificationChannel}}"
+              }
+            }
+          ]
+        },
+        "defaultConfig": {
+          "anomalyRules": [
+            {
+              "name": "订单量骤降",
+              "sql": "SELECT COUNT(*) as order_count FROM orders WHERE created_at >= NOW() - INTERVAL '1 hour'",
+              "valueColumn": "order_count",
+              "operator": "lt",
+              "threshold": 10,
+              "severity": "critical",
+              "description": "最近 1 小时订单量低于 10"
+            },
+            {
+              "name": "支付失败率过高",
+              "sql": "SELECT ROUND(COUNT(CASE WHEN status = 'failed' THEN 1 END)::numeric / NULLIF(COUNT(*), 0) * 100, 2) as fail_rate FROM payments WHERE created_at >= NOW() - INTERVAL '1 hour'",
+              "valueColumn": "fail_rate",
+              "operator": "gt",
+              "threshold": 5,
+              "severity": "warning",
+              "description": "最近 1 小时支付失败率超过 5%"
+            }
+          ],
+          "checkInterval": "hourly",
+          "alertCooldown": 3600,
+          "notificationChannel": ""
+        }
+      }
+    ],
+    "connections": [
+      { "from": "查询分析师", "to": "图表生成师", "condition": "query_success" },
+      { "from": "图表生成师", "to": "报表撰写师", "condition": "chart_generated" },
+      { "from": "异常检测师", "to": "报表撰写师", "condition": "anomalies_found" }
+    ],
+    "globalConfig": {
+      "timezone": "Asia/Shanghai",
+      "language": "zh-CN",
+      "maxConcurrentQueries": 5,
+      "defaultModel": "qwen-max"
+    }
+  }
+}

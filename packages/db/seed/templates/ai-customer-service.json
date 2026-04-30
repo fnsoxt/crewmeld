@@ -1,0 +1,412 @@
+{
+  "id": "tpl-customer-service",
+  "name": "AI 智能客服团队",
+  "slug": "ai-customer-service",
+  "category": "service",
+  "description": "由 5 个 AI 角色组成的客服团队，覆盖接待分流、售前咨询、售后处理、质量检测和人工转接全流程。基于知识库 RAG 驱动智能问答，支持多轮对话和 HITL 人工介入机制。7\u00d724 小时在线，首次响应 < 3 秒。",
+  "icon": "headphones",
+  "version": 1,
+  "isBuiltin": true,
+  "requiredTools": ["knowledge_base", "notification"],
+  "defaultConfig": {
+    "workingHours": "00:00-23:59",
+    "language": "zh-CN",
+    "maxConcurrentChats": 100,
+    "maxTurnsBeforeEscalation": 10,
+    "confidenceThreshold": 0.7,
+    "greetingMessage": "您好！我是智能客服，请问有什么可以帮您？",
+    "offlineMessage": "当前客服繁忙，已记录您的问题，我们会在工作时间内主动联系您。",
+    "knowledgeBaseIds": [],
+    "presaleKnowledgeBase": "",
+    "aftersaleKnowledgeBase": "",
+    "notificationChannel": "",
+    "qualityCheckEnabled": true,
+    "qualityAlertThreshold": 60,
+    "escalationTriggers": [
+      "customer_request",
+      "confidence_low",
+      "max_turns_reached",
+      "negative_sentiment"
+    ],
+    "autoCreateTicket": true,
+    "ticketApprovalRequired": true,
+    "timezone": "Asia/Shanghai"
+  },
+  "workflowDefinition": {
+    "roles": [
+      {
+        "name": "接待分流员",
+        "description": "接收客户消息，使用 LLM 进行意图识别和情绪检测，根据意图分流至售前/售后/转人工对应专员。首条消息发送欢迎语。",
+        "operatorType": "agent",
+        "workflowJson": {
+          "trigger": { "type": "webhook", "event": "customer_message" },
+          "steps": [
+            {
+              "id": "check_greeting",
+              "type": "function",
+              "config": {
+                "language": "javascript",
+                "description": "检查是否为新会话的第一条消息，如果是则先发送欢迎语",
+                "code": "function checkGreeting(params) {\n  const { sessionId, messageHistory } = params;\n  const isFirstMessage = !messageHistory || messageHistory.length === 0;\n  return { isFirstMessage, shouldSendGreeting: isFirstMessage };\n}"
+              }
+            },
+            {
+              "id": "classify_intent",
+              "type": "llm_call",
+              "config": {
+                "model": "qwen-turbo",
+                "systemPrompt": "你是一个客服意图分类器。分析客户消息，判断意图类别和情绪。\n\n## 意图类别\n- presale：售前咨询（产品功能、价格、方案对比、试用申请）\n- aftersale：售后服务（退换货、故障报修、使用指导、账户问题）\n- complaint：投诉建议（产品投诉、服务投诉、建议反馈）\n- transfer_human：明确要求人工（'转人工'、'找人工客服'、'找真人' 等）\n- general：闲聊或无法分类\n\n## 情绪检测\n- positive：积极正面\n- neutral：中性\n- negative：消极负面（不满、愤怒、焦虑）\n\n## 规则\n1. 如果消息中包含'转人工'、'人工客服'、'找真人'等关键词，直接分类为 transfer_human\n2. 如果检测到强烈负面情绪（辱骂、威胁），标记为 transfer_human + negative\n3. 投诉类默认路由到售后，严重投诉路由到转人工\n4. 简单闲聊（'你好'、'在吗'）分类为 general，由接待分流员直接回复\n\n## 输出格式\n```json\n{\n  \"intent\": \"presale|aftersale|complaint|transfer_human|general\",\n  \"confidence\": 0.95,\n  \"sentiment\": \"positive|neutral|negative\",\n  \"reasoning\": \"分类理由\",\n  \"shouldTransferHuman\": false,\n  \"transferReason\": \"\"\n}\n```",
+                "userPrompt": "客户消息：{{customer_message}}\n\n对话历史：{{message_history}}",
+                "responseFormat": {
+                  "name": "intent_classification",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "intent": {
+                        "type": "string",
+                        "enum": ["presale", "aftersale", "complaint", "transfer_human", "general"]
+                      },
+                      "confidence": { "type": "number" },
+                      "sentiment": {
+                        "type": "string",
+                        "enum": ["positive", "neutral", "negative"]
+                      },
+                      "reasoning": { "type": "string" },
+                      "shouldTransferHuman": { "type": "boolean" },
+                      "transferReason": { "type": "string" }
+                    },
+                    "required": [
+                      "intent",
+                      "confidence",
+                      "sentiment",
+                      "reasoning",
+                      "shouldTransferHuman"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "id": "route_message",
+              "type": "function",
+              "config": {
+                "language": "javascript",
+                "description": "根据意图分类结果路由消息到对应专员，低置信度或强制转人工时直接路由到转人工协调员",
+                "code": "function routeMessage(params) {\n  const { classification, confidenceThreshold, maxTurns, currentTurns } = params;\n  if (classification.shouldTransferHuman || classification.intent === 'transfer_human') {\n    return { target: 'transfer_human', reason: classification.transferReason || '客户要求转人工' };\n  }\n  if (classification.confidence < confidenceThreshold) {\n    return { target: 'transfer_human', reason: '意图识别置信度不足（' + classification.confidence + '）' };\n  }\n  if (currentTurns >= maxTurns) {\n    return { target: 'transfer_human', reason: '对话已超过 ' + maxTurns + ' 轮' };\n  }\n  var routeMap = { presale: 'presale_specialist', aftersale: 'aftersale_specialist', complaint: 'aftersale_specialist', general: 'self_reply' };\n  return { target: routeMap[classification.intent] || 'transfer_human', reason: classification.reasoning };\n}"
+              }
+            }
+          ]
+        },
+        "defaultConfig": {
+          "greetingMessage": "您好！我是智能客服，请问有什么可以帮您？",
+          "confidenceThreshold": 0.7,
+          "maxTurns": 10,
+          "intentCategories": ["presale", "aftersale", "complaint", "transfer_human", "general"]
+        }
+      },
+      {
+        "name": "售前咨询专员",
+        "description": "回答产品功能、定价、方案对比等售前问题。基于产品知识库进行 RAG 检索，结合对话上下文生成准确回答。引导客户完成购买决策。",
+        "operatorType": "agent",
+        "workflowJson": {
+          "trigger": { "type": "event", "source": "router_presale" },
+          "steps": [
+            {
+              "id": "search_knowledge",
+              "type": "knowledge_search",
+              "config": {
+                "collection": "{{presaleKnowledgeBase}}",
+                "topK": 5,
+                "similarityThreshold": 0.7,
+                "description": "在产品知识库中检索与客户问题相关的文档片段"
+              }
+            },
+            {
+              "id": "generate_answer",
+              "type": "llm_call",
+              "config": {
+                "model": "qwen-max",
+                "systemPrompt": "你是一位专业的售前客服顾问。基于提供的知识库内容，回答客户的产品咨询问题。\n\n## 角色设定\n- 身份：企业智能客服\n- 语气：专业、友好、耐心\n- 目标：准确回答问题，适当引导购买\n\n## 回答规则\n1. 严格基于知识库内容回答，不编造信息\n2. 如果知识库中没有相关内容，诚实说明并建议转人工\n3. 回答简洁明了，避免过长（200 字以内为佳）\n4. 涉及价格时注明「具体报价请联系销售团队」\n5. 在合适时机引导客户留联系方式或申请试用\n6. 如果客户连续 3 次追问同一问题仍未满意，建议转人工\n7. 使用中文回答\n\n## 知识库内容\n{{knowledge_results}}\n\n## 对话历史\n{{message_history}}\n\n## 输出格式\n```json\n{\n  \"answer\": \"回复内容\",\n  \"confidence\": 0.9,\n  \"sources\": [\"引用的知识库文档名\"],\n  \"suggestTransfer\": false,\n  \"transferReason\": \"\"\n}\n```",
+                "userPrompt": "客户问题：{{customer_message}}",
+                "responseFormat": {
+                  "name": "presale_answer",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "answer": { "type": "string" },
+                      "confidence": { "type": "number" },
+                      "sources": { "type": "array", "items": { "type": "string" } },
+                      "suggestTransfer": { "type": "boolean" },
+                      "transferReason": { "type": "string" }
+                    },
+                    "required": ["answer", "confidence", "sources", "suggestTransfer"]
+                  }
+                }
+              }
+            },
+            {
+              "id": "check_transfer",
+              "type": "function",
+              "config": {
+                "language": "javascript",
+                "description": "检查是否需要转人工（置信度低或 LLM 建议转人工）",
+                "code": "function checkTransfer(params) {\n  var answer = params.answer;\n  var confidenceThreshold = params.confidenceThreshold;\n  if (answer.suggestTransfer || answer.confidence < confidenceThreshold) {\n    return { shouldTransfer: true, reason: answer.transferReason || '知识库无相关内容', reply: '抱歉，关于这个问题我需要转接人工客服为您解答，请稍候。' };\n  }\n  return { shouldTransfer: false, reply: answer.answer };\n}"
+              }
+            }
+          ]
+        },
+        "defaultConfig": {
+          "knowledgeBase": "products",
+          "maxTurns": 10,
+          "topK": 5,
+          "similarityThreshold": 0.7
+        }
+      },
+      {
+        "name": "售后处理专员",
+        "description": "处理退换货、故障排查、使用指导等售后问题。基于售后知识库进行 RAG 检索，诊断问题并提供解决方案。需要后续跟进的问题自动创建工单。",
+        "operatorType": "agent",
+        "workflowJson": {
+          "trigger": { "type": "event", "source": "router_aftersale" },
+          "steps": [
+            {
+              "id": "search_support_kb",
+              "type": "knowledge_search",
+              "config": {
+                "collection": "{{aftersaleKnowledgeBase}}",
+                "topK": 5,
+                "similarityThreshold": 0.7,
+                "description": "在售后支持知识库中检索与客户问题相关的文档片段（退换货政策、故障排查指南等）"
+              }
+            },
+            {
+              "id": "diagnose_and_respond",
+              "type": "llm_call",
+              "config": {
+                "model": "qwen-max",
+                "systemPrompt": "你是一位专业的售后服务专员。基于提供的知识库内容，帮助客户解决售后问题。\n\n## 角色设定\n- 身份：企业智能客服（售后）\n- 语气：耐心、理解、专业\n- 目标：快速诊断问题，提供有效解决方案\n\n## 处理规则\n1. 先表示理解和歉意（如：「很抱歉给您带来不便」）\n2. 基于知识库内容提供解决方案\n3. 如果需要更多信息（订单号、问题图片等），礼貌询问\n4. 退换货问题：说明政策，询问必要信息后创建工单\n5. 故障排查：提供分步骤排查指南\n6. 涉及退款/赔偿等需要审批的操作：告知客户需要人工确认\n7. 不要承诺超出政策范围的内容\n\n## 知识库内容\n{{knowledge_results}}\n\n## 对话历史\n{{message_history}}\n\n## 输出格式\n```json\n{\n  \"answer\": \"回复内容\",\n  \"confidence\": 0.85,\n  \"problemType\": \"return|repair|guide|account|other\",\n  \"needsTicket\": false,\n  \"ticketSummary\": \"\",\n  \"needsApproval\": false,\n  \"suggestTransfer\": false,\n  \"transferReason\": \"\"\n}\n```",
+                "userPrompt": "客户问题：{{customer_message}}",
+                "responseFormat": {
+                  "name": "aftersale_answer",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "answer": { "type": "string" },
+                      "confidence": { "type": "number" },
+                      "problemType": {
+                        "type": "string",
+                        "enum": ["return", "repair", "guide", "account", "other"]
+                      },
+                      "needsTicket": { "type": "boolean" },
+                      "ticketSummary": { "type": "string" },
+                      "needsApproval": { "type": "boolean" },
+                      "suggestTransfer": { "type": "boolean" },
+                      "transferReason": { "type": "string" }
+                    },
+                    "required": [
+                      "answer",
+                      "confidence",
+                      "problemType",
+                      "needsTicket",
+                      "suggestTransfer"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "id": "create_ticket_if_needed",
+              "type": "function",
+              "config": {
+                "language": "javascript",
+                "description": "如果需要创建工单（退换货/维修等需跟进的问题），创建 task_execution 记录",
+                "code": "function createTicketIfNeeded(params) {\n  var response = params.response;\n  var employeeId = params.employeeId;\n  var sessionId = params.sessionId;\n  var customerMessage = params.customerMessage;\n  if (!response.needsTicket) {\n    return { ticketCreated: false };\n  }\n  var ticketData = {\n    employeeId: employeeId,\n    triggerType: 'event',\n    status: response.needsApproval ? 'hitl_waiting' : 'pending',\n    input: { sessionId: sessionId, customerMessage: customerMessage, problemType: response.problemType },\n    output: { ticketSummary: response.ticketSummary },\n    requiresReview: response.needsApproval\n  };\n  var replyAppend = response.needsApproval ? '\\n\\n您的请求已提交，需要人工确认后处理，请耐心等待。' : '\\n\\n已为您创建工单，我们会尽快处理。';\n  return { ticketCreated: true, ticketData: ticketData, replyAppend: replyAppend };\n}"
+              }
+            }
+          ]
+        },
+        "defaultConfig": {
+          "knowledgeBase": "support",
+          "autoCreateTicket": true,
+          "ticketApprovalRequired": true,
+          "maxTurns": 10
+        }
+      },
+      {
+        "name": "质检员",
+        "description": "每次会话结束后自动触发，对对话内容进行质量评估。从准确性、响应速度、礼貌度、解决率 4 个维度评分（0-100），低于阈值的对话标记为需复审。",
+        "operatorType": "function",
+        "workflowJson": {
+          "trigger": { "type": "event", "source": "conversation_ended" },
+          "steps": [
+            {
+              "id": "prepare_conversation",
+              "type": "function",
+              "config": {
+                "language": "javascript",
+                "description": "预处理对话内容，截取最近 20 轮（防止超长对话超出 token 限制），计算基础统计指标",
+                "code": "function prepareConversation(params) {\n  var messageHistory = params.messageHistory;\n  var startTime = params.startTime;\n  var endTime = params.endTime;\n  var messages = messageHistory || [];\n  var truncated = messages.length > 40 ? messages.slice(-40) : messages;\n  var totalTurns = Math.floor(truncated.length / 2);\n  var avgResponseTimeMs = endTime && startTime ? (new Date(endTime).getTime() - new Date(startTime).getTime()) / Math.max(totalTurns, 1) : 0;\n  var customerMessages = truncated.filter(function(m) { return m.role === 'user'; });\n  var botMessages = truncated.filter(function(m) { return m.role === 'assistant'; });\n  return {\n    conversationText: truncated.map(function(m) { return (m.role === 'user' ? '客户' : 'AI客服') + '：' + m.content; }).join('\\n'),\n    totalTurns: totalTurns,\n    avgResponseTimeMs: avgResponseTimeMs,\n    customerMessageCount: customerMessages.length,\n    botMessageCount: botMessages.length\n  };\n}"
+              }
+            },
+            {
+              "id": "evaluate_quality",
+              "type": "llm_call",
+              "config": {
+                "model": "qwen-plus",
+                "systemPrompt": "你是一位客服质量检测专家。评估以下客服对话的质量。\n\n## 评分维度（每项 0-100 分）\n\n### 1. 准确性（accuracy）\n- 回答是否正确、不存在错误信息\n- 是否基于事实和知识库内容\n- 100分：所有回答准确无误\n- 60分：大部分正确但有小错误\n- 30分：存在明显错误信息\n- 0分：答非所问或严重错误\n\n### 2. 响应质量（response_quality）\n- 回答是否清晰、完整、易懂\n- 是否提供了有效的解决方案\n- 100分：回答详尽、有针对性\n- 60分：基本回答了问题但不够深入\n- 30分：回答过于简单或含糊\n\n### 3. 礼貌度（politeness）\n- 语气是否专业、友好、耐心\n- 是否有共情表达（理解客户的不便）\n- 100分：始终专业友好，有共情\n- 60分：语气正常但缺少温度\n- 30分：语气生硬或不耐烦\n\n### 4. 解决率（resolution）\n- 客户的问题是否得到解决\n- 是否需要后续跟进\n- 100分：完全解决\n- 70分：部分解决，已创建工单跟进\n- 40分：未解决，已转人工\n- 10分：未解决，未做任何处理\n\n## 输出格式\n```json\n{\n  \"scores\": {\n    \"accuracy\": 85,\n    \"response_quality\": 78,\n    \"politeness\": 92,\n    \"resolution\": 70\n  },\n  \"overallScore\": 81,\n  \"highlights\": [\"回答准确，基于知识库\"],\n  \"improvements\": [\"可以更主动地跟进客户需求\"],\n  \"needsReview\": false,\n  \"reviewReason\": \"\"\n}\n```",
+                "userPrompt": "对话内容：\n{{conversation_text}}\n\n统计信息：\n- 总轮次：{{total_turns}}\n- 平均响应时间：{{avg_response_time_ms}}ms",
+                "responseFormat": {
+                  "name": "quality_evaluation",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "scores": {
+                        "type": "object",
+                        "properties": {
+                          "accuracy": { "type": "number" },
+                          "response_quality": { "type": "number" },
+                          "politeness": { "type": "number" },
+                          "resolution": { "type": "number" }
+                        },
+                        "required": ["accuracy", "response_quality", "politeness", "resolution"]
+                      },
+                      "overallScore": { "type": "number" },
+                      "highlights": { "type": "array", "items": { "type": "string" } },
+                      "improvements": { "type": "array", "items": { "type": "string" } },
+                      "needsReview": { "type": "boolean" },
+                      "reviewReason": { "type": "string" }
+                    },
+                    "required": [
+                      "scores",
+                      "overallScore",
+                      "highlights",
+                      "improvements",
+                      "needsReview"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "id": "save_quality_report",
+              "type": "function",
+              "config": {
+                "language": "javascript",
+                "description": "保存质检结果到 work_logs 表，低分对话创建待审批任务",
+                "code": "function saveQualityReport(params) {\n  var evaluation = params.evaluation;\n  var sessionId = params.sessionId;\n  var employeeId = params.employeeId;\n  var alertThreshold = params.alertThreshold;\n  var logEntry = {\n    employeeId: employeeId,\n    logType: 'quality_check',\n    content: '会话质检完成 - 综合评分：' + evaluation.overallScore + '分',\n    metadata: { sessionId: sessionId, scores: evaluation.scores, overallScore: evaluation.overallScore, highlights: evaluation.highlights, improvements: evaluation.improvements }\n  };\n  var needsAlert = evaluation.overallScore < alertThreshold || evaluation.needsReview;\n  var alertMessage = needsAlert ? '会话 ' + sessionId + ' 质检评分 ' + evaluation.overallScore + ' 分（低于阈值 ' + alertThreshold + '），需要复审。原因：' + (evaluation.reviewReason || evaluation.improvements.join('；')) : '';\n  return { logEntry: logEntry, needsAlert: needsAlert, alertMessage: alertMessage };\n}"
+              }
+            }
+          ]
+        },
+        "defaultConfig": {
+          "qualityDimensions": ["accuracy", "response_quality", "politeness", "resolution"],
+          "alertThreshold": 60,
+          "maxConversationTurnsToAnalyze": 20,
+          "autoReview": true
+        }
+      },
+      {
+        "name": "转人工协调员",
+        "description": "当 AI 无法解决问题、客户明确要求人工、或对话超过最大轮次时触发。汇总对话上下文生成摘要，通过通知服务推送到人工坐席，回复客户等待提示。",
+        "operatorType": "function",
+        "workflowJson": {
+          "trigger": { "type": "event", "source": "escalation_request" },
+          "steps": [
+            {
+              "id": "summarize_conversation",
+              "type": "llm_call",
+              "config": {
+                "model": "qwen-turbo",
+                "systemPrompt": "你是一个对话摘要专家。将客服对话内容总结为简洁的摘要，供人工客服快速了解上下文。\n\n## 摘要格式\n```json\n{\n  \"customerIntent\": \"客户意图（一句话）\",\n  \"problemSummary\": \"问题概要（2-3 句话）\",\n  \"aiAttempts\": \"AI 已尝试的解决方案\",\n  \"transferReason\": \"转人工原因\",\n  \"suggestedAction\": \"建议人工客服的处理方向\",\n  \"customerSentiment\": \"客户当前情绪\",\n  \"priority\": \"high|medium|low\"\n}\n```\n\n## 规则\n1. 摘要不超过 200 字\n2. 包含客户提到的关键信息（订单号、产品名、问题描述）\n3. 如果客户情绪激动，标记为 high priority\n4. 如果是简单的信息咨询转人工，标记为 low priority",
+                "userPrompt": "对话内容：\n{{message_history}}\n\n转人工原因：{{transfer_reason}}",
+                "responseFormat": {
+                  "name": "conversation_summary",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "customerIntent": { "type": "string" },
+                      "problemSummary": { "type": "string" },
+                      "aiAttempts": { "type": "string" },
+                      "transferReason": { "type": "string" },
+                      "suggestedAction": { "type": "string" },
+                      "customerSentiment": { "type": "string" },
+                      "priority": { "type": "string", "enum": ["high", "medium", "low"] }
+                    },
+                    "required": [
+                      "customerIntent",
+                      "problemSummary",
+                      "transferReason",
+                      "suggestedAction",
+                      "priority"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "id": "create_hitl_task",
+              "type": "function",
+              "config": {
+                "language": "javascript",
+                "description": "创建 HITL 待审批任务（task_execution 状态为 hitl_waiting），推送通知到人工坐席",
+                "code": "function createHitlTask(params) {\n  var summary = params.summary;\n  var sessionId = params.sessionId;\n  var employeeId = params.employeeId;\n  var notificationChannel = params.notificationChannel;\n  var taskData = {\n    employeeId: employeeId,\n    triggerType: 'event',\n    status: 'hitl_waiting',\n    input: { sessionId: sessionId, summary: summary },\n    output: {},\n    requiresReview: true,\n    inputSummary: '转人工：' + summary.customerIntent,\n    outputSummary: '等待人工处理 - ' + summary.priority + ' 优先级'\n  };\n  var priorityLabel = summary.priority === 'high' ? '紧急' : '普通';\n  var notification = {\n    channel: notificationChannel,\n    title: '[' + priorityLabel + '] 客户转人工请求',\n    content: '客户意图：' + summary.customerIntent + '\\n问题概要：' + summary.problemSummary + '\\n转人工原因：' + summary.transferReason + '\\n建议处理：' + summary.suggestedAction,\n    priority: summary.priority\n  };\n  return { taskData: taskData, notification: notification, customerReply: '正在为您转接人工客服，请稍候。您的问题摘要已发送给客服同事，他们可以直接查看您的对话记录。' };\n}"
+              }
+            },
+            {
+              "id": "send_notification",
+              "type": "notification",
+              "config": {
+                "channel": "{{notificationChannel}}",
+                "description": "推送转人工通知到企业微信/钉钉群"
+              }
+            }
+          ]
+        },
+        "defaultConfig": {
+          "escalationTriggers": [
+            "customer_request",
+            "confidence_low",
+            "max_turns_reached",
+            "negative_sentiment"
+          ],
+          "notificationChannel": "",
+          "maxWaitTime": 300,
+          "offlineMessage": "当前客服繁忙，已记录您的问题，我们会在工作时间内主动联系您。"
+        }
+      }
+    ],
+    "connections": [
+      { "from": "接待分流员", "to": "售前咨询专员", "condition": "intent == presale" },
+      {
+        "from": "接待分流员",
+        "to": "售后处理专员",
+        "condition": "intent == aftersale || intent == complaint"
+      },
+      {
+        "from": "接待分流员",
+        "to": "转人工协调员",
+        "condition": "intent == transfer_human || shouldTransferHuman"
+      },
+      {
+        "from": "售前咨询专员",
+        "to": "转人工协调员",
+        "condition": "shouldTransfer || confidence < threshold"
+      },
+      {
+        "from": "售后处理专员",
+        "to": "转人工协调员",
+        "condition": "shouldTransfer || confidence < threshold"
+      },
+      { "from": "售前咨询专员", "to": "质检员", "condition": "conversation_ended" },
+      { "from": "售后处理专员", "to": "质检员", "condition": "conversation_ended" },
+      { "from": "转人工协调员", "to": "质检员", "condition": "conversation_ended" }
+    ],
+    "globalConfig": {
+      "timezone": "Asia/Shanghai",
+      "language": "zh-CN",
+      "maxConcurrentChats": 100,
+      "sessionTimeout": 1800,
+      "defaultModel": "qwen-max"
+    }
+  }
+}

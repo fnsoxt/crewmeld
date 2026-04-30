@@ -1,0 +1,37 @@
+<svg width="256" height="256" viewBox="46 46 164 164" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Crewmeld — Packed Cluster (Arctic Dark)</title>
+  <defs>
+    <linearGradient id="t7a" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#7DD3FC"/><stop offset="100%" stop-color="#0284C7"/></linearGradient>
+    <linearGradient id="t7b" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#67E8F9"/><stop offset="100%" stop-color="#0891B2"/></linearGradient>
+    <linearGradient id="t7c" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#93C5FD"/><stop offset="100%" stop-color="#2563EB"/></linearGradient>
+    <linearGradient id="t7d" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#A5F3FC"/><stop offset="100%" stop-color="#06B6D4"/></linearGradient>
+    <linearGradient id="t7e" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#A78BFA"/><stop offset="100%" stop-color="#6366F1"/></linearGradient>
+    <linearGradient id="t7f" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#E0F2FE"/><stop offset="100%" stop-color="#0EA5E9"/></linearGradient>
+  </defs>
+
+  <g>
+    <circle cx="128" cy="128" r="26" fill="url(#t7a)"/>
+    <circle cx="96"  cy="108" r="20" fill="url(#t7b)"/>
+    <circle cx="160" cy="108" r="20" fill="url(#t7c)"/>
+    <circle cx="96"  cy="148" r="18" fill="url(#t7d)"/>
+    <circle cx="160" cy="148" r="18" fill="url(#t7e)"/>
+    <circle cx="128" cy="86"  r="14" fill="url(#t7f)"/>
+    <circle cx="128" cy="170" r="14" fill="url(#t7c)"/>
+    <circle cx="74"  cy="128" r="14" fill="url(#t7e)"/>
+    <circle cx="182" cy="128" r="14" fill="url(#t7b)"/>
+    <circle cx="108" cy="76"  r="9"  fill="url(#t7a)"/>
+    <circle cx="148" cy="76"  r="9"  fill="url(#t7d)"/>
+    <circle cx="72"  cy="96"  r="8"  fill="url(#t7c)"/>
+    <circle cx="184" cy="96"  r="8"  fill="url(#t7f)"/>
+    <circle cx="72"  cy="160" r="8"  fill="url(#t7b)"/>
+    <circle cx="184" cy="160" r="8"  fill="url(#t7a)"/>
+    <circle cx="108" cy="180" r="9"  fill="url(#t7e)"/>
+    <circle cx="148" cy="180" r="9"  fill="url(#t7c)"/>
+    <circle cx="128" cy="60"  r="6"  fill="url(#t7b)"/>
+    <circle cx="128" cy="196" r="6"  fill="url(#t7d)"/>
+    <circle cx="56"  cy="128" r="6"  fill="url(#t7f)"/>
+    <circle cx="200" cy="128" r="6"  fill="url(#t7a)"/>
+  </g>
+
+  <circle cx="128" cy="128" r="8" fill="#FFFFFF"/>
+</svg>

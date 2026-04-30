@@ -1,0 +1,19 @@
+{{- if and .Values.redis.enabled .Values.redis.sentinel.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "crewmeld.fullname" . }}-redis-sentinel
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crewmeld.redis.labels" . | nindent 4 }}
+data:
+  sentinel.conf: |
+    port {{ .Values.redis.sentinel.port }}
+    sentinel monitor {{ .Values.redis.sentinel.masterSet }} {{ include "crewmeld.fullname" . }}-redis-0.{{ include "crewmeld.fullname" . }}-redis-headless {{ .Values.redis.service.port }} {{ div (add .Values.redis.sentinel.replicas 1) 2 | add 1 }}
+    sentinel down-after-milliseconds {{ .Values.redis.sentinel.masterSet }} {{ .Values.redis.sentinel.downAfterMilliseconds }}
+    sentinel failover-timeout {{ .Values.redis.sentinel.masterSet }} {{ .Values.redis.sentinel.failoverTimeout }}
+    sentinel parallel-syncs {{ .Values.redis.sentinel.masterSet }} {{ .Values.redis.sentinel.parallelSyncs }}
+    {{- if .Values.redis.auth.password }}
+    sentinel auth-pass {{ .Values.redis.sentinel.masterSet }} {{ .Values.redis.auth.password }}
+    {{- end }}
+{{- end }}

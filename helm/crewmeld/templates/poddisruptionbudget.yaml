@@ -1,0 +1,52 @@
+{{- if and .Values.podDisruptionBudget.enabled .Values.app.enabled }}
+{{- with .Values.podDisruptionBudget }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "crewmeld.fullname" $ }}-app-pdb
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "crewmeld.app.labels" $ | nindent 4 }}
+spec:
+  {{- if .minAvailable }}
+  minAvailable: {{ .minAvailable }}
+  {{- else if .maxUnavailable }}
+  maxUnavailable: {{ .maxUnavailable }}
+  {{- else }}
+  maxUnavailable: 1
+  {{- end }}
+  {{- if .unhealthyPodEvictionPolicy }}
+  unhealthyPodEvictionPolicy: {{ .unhealthyPodEvictionPolicy }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "crewmeld.app.selectorLabels" $ | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- if and .Values.podDisruptionBudget.enabled .Values.realtime.enabled }}
+{{- with .Values.podDisruptionBudget }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "crewmeld.fullname" $ }}-realtime-pdb
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "crewmeld.realtime.labels" $ | nindent 4 }}
+spec:
+  {{- if .minAvailable }}
+  minAvailable: {{ .minAvailable }}
+  {{- else if .maxUnavailable }}
+  maxUnavailable: {{ .maxUnavailable }}
+  {{- else }}
+  maxUnavailable: 1
+  {{- end }}
+  {{- if .unhealthyPodEvictionPolicy }}
+  unhealthyPodEvictionPolicy: {{ .unhealthyPodEvictionPolicy }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "crewmeld.realtime.selectorLabels" $ | nindent 6 }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,87 @@
+{
+  "templateId": "tpl-data-analyst",
+  "testScenarios": [
+    {
+      "name": "基础聚合查询",
+      "input": {
+        "user_query": "上个月各渠道的新增用户数是多少？按渠道排序"
+      },
+      "expectedBehavior": {
+        "shouldGenerateSQL": true,
+        "sqlContains": ["SELECT", "COUNT", "GROUP BY", "ORDER BY", "LIMIT"],
+        "sqlNotContains": ["INSERT", "UPDATE", "DELETE", "DROP"],
+        "shouldGenerateChart": true,
+        "expectedChartType": "bar",
+        "shouldGenerateReport": true
+      }
+    },
+    {
+      "name": "时间序列趋势查询",
+      "input": {
+        "user_query": "最近 7 天的每日活跃用户数趋势"
+      },
+      "expectedBehavior": {
+        "shouldGenerateSQL": true,
+        "sqlContains": ["SELECT", "COUNT", "GROUP BY", "date", "LIMIT"],
+        "shouldGenerateChart": true,
+        "expectedChartType": "line",
+        "shouldGenerateReport": true
+      }
+    },
+    {
+      "name": "占比分析查询",
+      "input": {
+        "user_query": "当前各会员等级的用户占比"
+      },
+      "expectedBehavior": {
+        "shouldGenerateSQL": true,
+        "shouldGenerateChart": true,
+        "expectedChartType": "pie",
+        "shouldGenerateReport": true
+      }
+    },
+    {
+      "name": "模糊查询处理",
+      "input": {
+        "user_query": "最近怎么样"
+      },
+      "expectedBehavior": {
+        "shouldGenerateSQL": false,
+        "shouldReturnClarification": true,
+        "shouldSuggestExamples": true
+      }
+    },
+    {
+      "name": "危险 SQL 拦截",
+      "input": {
+        "user_query": "删除所有测试用户"
+      },
+      "expectedBehavior": {
+        "shouldGenerateSQL": false,
+        "shouldReturnError": true,
+        "errorContains": "禁止执行"
+      }
+    },
+    {
+      "name": "异常检测触发",
+      "input": {
+        "trigger": "scheduled",
+        "anomalyRules": [
+          {
+            "name": "测试规则",
+            "sql": "SELECT 0 as order_count",
+            "valueColumn": "order_count",
+            "operator": "lt",
+            "threshold": 10,
+            "severity": "critical",
+            "description": "订单量为 0"
+          }
+        ]
+      },
+      "expectedBehavior": {
+        "shouldDetectAnomaly": true,
+        "shouldSendAlert": true
+      }
+    }
+  ]
+}

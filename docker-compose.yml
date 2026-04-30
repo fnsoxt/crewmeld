@@ -1,0 +1,514 @@
+name: crewmeld
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+# Shared image + build declaration for every service baked from the
+# crewmeld monorepo. Declaring `build` on each consumer lets
+# `docker compose build crewmeld` (or any sibling) produce the image
+# used by setup / migrations / crewmeld.
+x-crewmeld-app: &crewmeld-app
+  image: proinsight/crewmeld:${VERSION:-latest}
+  build:
+    context: .
+    dockerfile: docker/app.Dockerfile
+    args:
+      REGISTRY_MIRROR: ${REGISTRY_MIRROR:-}
+      NPM_REGISTRY: ${NPM_REGISTRY:-}
+
+services:
+  # =============== BASE LAYER ===============
+
+  setup:
+    <<: *crewmeld-app
+    profiles: [init]
+    restart: "no"
+    logging: *default-logging
+    command: ["bun", "scripts/ensure-secrets.ts"]
+    environment:
+      - ENV_PATH=/app/.env
+    volumes:
+      - ./.env:/app/.env
+
+  db:
+    image: pgvector/pgvector:pg17
+    pull_policy: if_not_present
+    restart: unless-stopped
+    logging: *default-logging
+    expose:
+      - "5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-crewmeld}
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8 --locale=C
+    volumes:
+      - crewmeld_pg_data:/var/lib/postgresql/data
+      # init.sql runs ONCE when the data volume is empty. Subsequent
+      # `docker compose up` calls see a populated volume and skip this.
+      # Only `docker compose down -v` forces re-init on next up.
+      - ./packages/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2"
+
+  redis:
+    image: redis:7-alpine
+    pull_policy: if_not_present
+    restart: unless-stopped
+    logging: *default-logging
+    expose:
+      - "6379"
+    command: >
+      redis-server
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+    volumes:
+      - crewmeld_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1"
+
+  migrations:
+    <<: *crewmeld-app
+    restart: "no"
+    logging: *default-logging
+    command: ["bun", "scripts/run-migrations.ts"]
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-crewmeld}
+    volumes:
+      - ./packages/db/init.sql:/app/packages/db/init.sql:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  crewmeld:
+    <<: *crewmeld-app
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${APP_PORT:-6100}:6100"
+      - "${SOCKET_PORT:-6102}:6102"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-crewmeld}
+      - REDIS_URL=redis://redis:6379
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:6100}
+      - BETTER_AUTH_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:6100}
+      - APP_BASE_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:6100}
+      - SOCKET_SERVER_URL=http://127.0.0.1:6102
+      - NEXT_PUBLIC_SOCKET_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:6100}
+      - RAGFLOW_URL=${RAGFLOW_URL:-http://ragflow:9380}
+      - OLLAMA_URL=${OLLAMA_URL:-}
+    volumes:
+      - crewmeld_k3s_shared:/shared
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      # Optional: when --profile k3s is active, wait for k3s-init to write
+      # /shared/autogen.env (K8s API token + endpoint) AND finish prepulling
+      # skill base images. Without this, crewmeld starts too early and the
+      # deploy API silently returns "undefined".
+      # required: false lets `docker compose up` work without --profile k3s.
+      k3s-init:
+        condition: service_completed_successfully
+        required: false
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:6100/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: "4"
+
+  # =============== PROFILE: k3s ===============
+
+  k3s:
+    image: rancher/k3s:v1.33.0-k3s1
+    pull_policy: if_not_present
+    profiles: [k3s]
+    restart: unless-stopped
+    logging: *default-logging
+    privileged: true
+    # Pin hostname so the k3s node name is stable across container recreations.
+    # Without this the node name = container ID, which changes on every recreate
+    # and invalidates the nodeAffinity on local-path PersistentVolumes.
+    hostname: crewmeld-k3s
+    command: server --disable traefik --disable servicelb --disable metrics-server --tls-san=k3s --node-name=crewmeld-k3s
+    environment:
+      - K3S_KUBECONFIG_OUTPUT=/output/kubeconfig.yaml
+      - K3S_KUBECONFIG_MODE=644
+      # Optional: route containerd image pulls through a proxy to bypass GFW.
+      # Set HTTP_PROXY / HTTPS_PROXY / NO_PROXY in .env when needed (Go's
+      # net/http supports socks5://, so socks5://host:port works directly).
+      # Empty values are inert — leave unset for direct egress.
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-}
+    tmpfs:
+      - /run
+      - /var/run
+    expose:
+      - "6443"
+    ports:
+      # Map k3s NodePort range to host so skill Pods are reachable from host / crewmeld container
+      - "${K8S_NODEPORT_MIN:-30000}-${K8S_NODEPORT_MAX:-32767}:30000-32767"
+    volumes:
+      - crewmeld_k3s_data:/var/lib/rancher/k3s
+      - crewmeld_k3s_shared:/output
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /output/kubeconfig.yaml && kubectl get nodes --no-headers 2>/dev/null | grep -q ' Ready'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  k3s-init:
+    image: bitnami/kubectl
+    profiles: [k3s]
+    restart: "no"
+    logging: *default-logging
+    user: root
+    entrypoint: ["/bin/sh", "/scripts/k3s-init.sh"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - HOST_IP=${HOST_IP:-}
+      - K8S_DEPLOY_NAMESPACE=${K8S_DEPLOY_NAMESPACE:-crewmeld-skills}
+      - K8S_WARM_POOL_SIZE=${K8S_WARM_POOL_SIZE:-3}
+      # Skill base images to pre-pull via in-cluster `kubectl run` probe pod.
+      # Override in .env to add custom runtimes (e.g. node:20, python:3.11).
+      # Default matches IMAGE_MAP in apps/crewmeld/lib/k8s/deploy-skill.ts.
+      - K8S_PREPULL_IMAGES=${K8S_PREPULL_IMAGES:-node:22-bookworm python:3.12-bookworm}
+      - MINIO_API_PORT=${MINIO_API_PORT:-9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-rag_flow}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-infini_rag_flow}
+      - MINIO_BUCKET=${MINIO_BUCKET:-tool-files}
+    volumes:
+      - crewmeld_k3s_shared:/shared
+      - ./scripts/k3s-init.sh:/scripts/k3s-init.sh:ro
+      - ./scripts/k8s-rbac.yaml:/app/scripts/k8s-rbac.yaml:ro
+    depends_on:
+      k3s:
+        condition: service_healthy
+
+  # =============== PROFILE: minio ===============
+
+  minio:
+    image: minio/minio
+    pull_policy: if_not_present
+    profiles: [minio]
+    restart: unless-stopped
+    logging: *default-logging
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-rag_flow}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-infini_rag_flow}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - crewmeld_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  minio-init:
+    image: minio/mc
+    pull_policy: if_not_present
+    profiles: [minio]
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-rag_flow}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-infini_rag_flow}
+      - MINIO_BUCKET=${MINIO_BUCKET:-tool-files}
+    entrypoint: >
+      /bin/sh -c "
+      set -e;
+      until mc alias set local http://minio:9000 \"$$MINIO_ACCESS_KEY\" \"$$MINIO_SECRET_KEY\"; do echo waiting...; sleep 2; done;
+      mc mb --ignore-existing local/$$MINIO_BUCKET;
+      mc anonymous set download local/$$MINIO_BUCKET;
+      echo 'MinIO bucket ready.'
+      "
+
+  # =============== PROFILE: ragflow ===============
+  # Full RAGFlow knowledge-base engine stack (ES + MySQL + Valkey + RAGFlow)
+  # Memory requirement: additional ~8-12GB (ES 2G + MySQL 1G + RAGFlow 4-8G)
+  # Recommended host total memory >= 16GB
+
+  ragflow-es:
+    image: elasticsearch:8.11.3
+    pull_policy: if_not_present
+    profiles: [ragflow]
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    volumes:
+      - crewmeld_ragflow_es_data:/usr/share/elasticsearch/data
+    expose:
+      - "9200"
+    networks:
+      default:
+        aliases:
+          - es01
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2"
+
+  ragflow-mysql:
+    image: mysql:8.0.39
+    pull_policy: if_not_present
+    profiles: [ragflow]
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - MYSQL_ROOT_PASSWORD=infini_rag_flow
+      - MYSQL_DATABASE=rag_flow
+    command: --max-connections=1000 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - crewmeld_ragflow_mysql_data:/var/lib/mysql
+    expose:
+      - "3306"
+    networks:
+      default:
+        aliases:
+          - mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pinfini_rag_flow"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1"
+
+  ragflow-redis:
+    image: valkey/valkey:8
+    pull_policy: if_not_present
+    profiles: [ragflow]
+    restart: unless-stopped
+    logging: *default-logging
+    command: valkey-server --requirepass infini_rag_flow --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - crewmeld_ragflow_redis_data:/data
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a infini_rag_flow ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  ragflow:
+    image: ${RAGFLOW_IMAGE:-infiniflow/ragflow:v0.23.1}
+    pull_policy: if_not_present
+    profiles: [ragflow]
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - RAGFLOW_HOST=0.0.0.0
+      - RAGFLOW_HTTP_PORT=9380
+      - SVR_HTTP_PORT=9380
+      - TZ=Asia/Shanghai
+      # Elasticsearch
+      - DOC_ENGINE=elasticsearch
+      - ES_HOST=ragflow-es
+      - ES_PORT=9200
+      - ELASTIC_PASSWORD=
+      # MySQL
+      - MYSQL_HOST=ragflow-mysql
+      - MYSQL_PORT=3306
+      - MYSQL_PASSWORD=infini_rag_flow
+      - MYSQL_DBNAME=rag_flow
+      # Redis (RAGFlow-specific, not shared with crewmeld's redis)
+      - REDIS_HOST=ragflow-redis:6379
+      - REDIS_PASSWORD=infini_rag_flow
+      - REDIS_DB=1
+      # MinIO (optional: shared with --profile minio; if not enabled RAGFlow uses local storage)
+      - MINIO_HOST=${RAGFLOW_MINIO_HOST:-minio}
+      - MINIO_PORT=9000
+      - MINIO_USER=${MINIO_ACCESS_KEY:-rag_flow}
+      - MINIO_PASSWORD=${MINIO_SECRET_KEY:-infini_rag_flow}
+    volumes:
+      - crewmeld_ragflow_data:/ragflow/data
+      - ./docker/ragflow-nginx.conf:/etc/nginx/sites-enabled/default:ro
+    ports:
+      - "${RAGFLOW_PORT:-9380}:80"
+      - "${RAGFLOW_API_PORT:-19380}:9380"
+    depends_on:
+      ragflow-es:
+        condition: service_healthy
+      ragflow-mysql:
+        condition: service_healthy
+      ragflow-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9380/api/v1/datasets?page=1&page_size=1 -H 'Authorization: Bearer dummy' || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: ${RAGFLOW_MEMORY_LIMIT:-8G}
+          cpus: "4"
+
+  # =============== PROFILE: ollama / ollama-cpu ===============
+  # Local LLM via Ollama. Two variants (mutually exclusive — pick one):
+  #   --profile ollama      → NVIDIA GPU (needs nvidia-container-toolkit)
+  #   --profile ollama-cpu  → CPU-only
+  # Optional: --profile ollama-setup  → one-shot pull of gemma4:e2b (smallest Gemma 4, multimodal)
+  ollama:
+    image: ollama/ollama:latest
+    pull_policy: if_not_present
+    profiles: [ollama]
+    logging: *default-logging
+    volumes:
+      - crewmeld_ollama_data:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    environment:
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - OLLAMA_LOAD_TIMEOUT=-1
+      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_DEBUG=1
+      - OLLAMA_HOST=0.0.0.0:11434
+    command: serve
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  ollama-cpu:
+    image: ollama/ollama:latest
+    pull_policy: if_not_present
+    profiles: [ollama-cpu]
+    logging: *default-logging
+    volumes:
+      - crewmeld_ollama_data:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    environment:
+      - OLLAMA_LOAD_TIMEOUT=-1
+      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_DEBUG=1
+      - OLLAMA_HOST=0.0.0.0:11434
+    command: serve
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    # Expose as `ollama` hostname so crewmeld app uses OLLAMA_URL=http://ollama:11434
+    # regardless of which profile the user picked.
+    networks:
+      default:
+        aliases:
+          - ollama
+
+  model-setup:
+    image: ollama/ollama:latest
+    pull_policy: if_not_present
+    profiles: [ollama-setup]
+    logging: *default-logging
+    volumes:
+      - crewmeld_ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=ollama:11434
+    entrypoint: ["/bin/sh", "-lc"]
+    command: >
+      sh -c "
+        echo 'Waiting for Ollama...' &&
+        until ollama list >/dev/null 2>&1; do sleep 2; done &&
+        echo 'Pulling gemma4:e2b (Gemma 4 effective-2B, multimodal ~7.2GB)...' &&
+        ollama pull gemma4:e2b &&
+        echo 'Done. To pull more: docker compose exec ollama ollama pull <name>'
+      "
+    restart: "no"
+
+volumes:
+  crewmeld_pg_data:
+  crewmeld_redis_data:
+  crewmeld_k3s_shared:
+  crewmeld_k3s_data:
+  crewmeld_minio_data:
+  crewmeld_ragflow_data:
+  crewmeld_ragflow_es_data:
+  crewmeld_ragflow_mysql_data:
+  crewmeld_ragflow_redis_data:
+  crewmeld_ollama_data:
+
+networks:
+  default:
+    name: crewmeld-network

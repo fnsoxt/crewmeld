@@ -1,0 +1,71 @@
+{{- if .Values.ingressInternal.enabled }}
+{{- $appActive := .Values.app.enabled -}}
+{{- $realtimeActive := .Values.realtime.enabled -}}
+{{- $realtimeHasOwnRule := and $realtimeActive (or (not $appActive) (ne .Values.ingressInternal.realtime.host .Values.ingressInternal.app.host)) -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "crewmeld.fullname" . }}-ingress-internal
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crewmeld.labels" . | nindent 4 }}
+  {{- with .Values.ingressInternal.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingressInternal.className }}
+  ingressClassName: {{ .Values.ingressInternal.className }}
+  {{- end }}
+  {{- if .Values.ingressInternal.tls.enabled }}
+  tls:
+    - hosts:
+        {{- if $appActive }}
+        - {{ .Values.ingressInternal.app.host | quote }}
+        {{- end }}
+        {{- if $realtimeHasOwnRule }}
+        - {{ .Values.ingressInternal.realtime.host | quote }}
+        {{- end }}
+      secretName: {{ .Values.ingressInternal.tls.secretName }}
+  {{- end }}
+  rules:
+    {{- if $appActive }}
+    - host: {{ .Values.ingressInternal.app.host | quote }}
+      http:
+        paths:
+          {{- if and $realtimeActive (eq .Values.ingressInternal.realtime.host .Values.ingressInternal.app.host) }}
+          {{- range .Values.ingressInternal.realtime.paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "crewmeld.fullname" $ }}-realtime
+                port:
+                  number: {{ $.Values.realtime.service.port }}
+          {{- end }}
+          {{- end }}
+          {{- range .Values.ingressInternal.app.paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "crewmeld.fullname" $ }}-app
+                port:
+                  number: {{ $.Values.app.service.port }}
+          {{- end }}
+    {{- end }}
+    {{- if $realtimeHasOwnRule }}
+    - host: {{ .Values.ingressInternal.realtime.host | quote }}
+      http:
+        paths:
+          {{- range .Values.ingressInternal.realtime.paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "crewmeld.fullname" $ }}-realtime
+                port:
+                  number: {{ $.Values.realtime.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}
